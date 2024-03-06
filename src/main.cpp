@@ -1,78 +1,57 @@
+
+#include "PasswordManager.hpp"
 #include <iostream>
-#include <fstream>
-#include <string>
-#include <cstring>
-#include <openssl/evp.h>
-#include <openssl/aes.h>
-#include <openssl/rand.h>
-#include <vector>
-
-const int KEY_SIZE = 32; // AES 256-bit key size
-const int IV_SIZE = 16;  // AES block size
-const int MAX_CIPHERTEXT_SIZE = 1024; // Maximum size for ciphertext array
-
-// Function to encrypt data using AES
-void encrypt(const std::string& password, const std::string& plaintext, unsigned char* ciphertext, unsigned char* key, unsigned char* iv) {
-    AES_KEY aesKey;
-    AES_set_encrypt_key(key, KEY_SIZE * 8, &aesKey);
-    AES_cbc_encrypt(reinterpret_cast<const unsigned char*>(plaintext.c_str()), ciphertext, plaintext.size(), &aesKey, iv, AES_ENCRYPT);
-}
-
-// Function to decrypt data using AES
-void decrypt(const std::string& password, unsigned char* ciphertext, unsigned char* decryptedtext, unsigned char* key, unsigned char* iv) {
-    AES_KEY aesKey;
-    AES_set_decrypt_key(key, KEY_SIZE * 8, &aesKey);
-    AES_cbc_encrypt(ciphertext, decryptedtext, AES_BLOCK_SIZE, &aesKey, iv, AES_DECRYPT);
-}
-
-// Function to read key from password
-void deriveKeyFromPassword(const std::string& password, unsigned char* key) {
-    EVP_BytesToKey(EVP_aes_256_cbc(), EVP_sha256(), nullptr,
-                   reinterpret_cast<const unsigned char*>(password.c_str()), password.length(), 1, key, nullptr);
-}
+#include <cstdlib> // For exit()
 
 int main() {
-    unsigned char key[KEY_SIZE];
-    unsigned char iv[IV_SIZE];
-    std::string password;
-
+    std::string masterPassword;
     std::cout << "Enter master password: ";
-    std::getline(std::cin, password);
+    std::getline(std::cin, masterPassword);
 
-    // Derive key from password
-    deriveKeyFromPassword(password, key);
+    PasswordManager passwordManager(masterPassword);
 
-    // Initialize IV with some random data
-    RAND_bytes(iv, IV_SIZE);
+    // Main menu loop
+    while (true) {
+        std::cout << "\nOptions:\n1. Store password\n2. Retrieve password\n3. Exit\n";
+        int choice;
+        std::cout << "Enter your choice: ";
+        std::cin >> choice;
+        std::cin.ignore(); // Clear the input buffer
 
-    // Example plaintext password
-    const std::string plaintextPassword = "examplepassword";
-
-    // Encrypt the plaintext password
-    unsigned char ciphertext[MAX_CIPHERTEXT_SIZE]; // Allocate with a fixed size
-    encrypt(password, plaintextPassword, ciphertext, key, iv);
-
-    // Save ciphertext to a file
-    std::ofstream file("passwords.dat", std::ios::binary);
-    file.write(reinterpret_cast<char*>(ciphertext), MAX_CIPHERTEXT_SIZE); // Write fixed size
-    file.close();
-
-    // Read ciphertext from file
-    std::ifstream infile("passwords.dat", std::ios::binary | std::ios::ate);
-    std::streamsize size = infile.tellg();
-    infile.seekg(0, std::ios::beg);
-
-    std::vector<unsigned char> buffer(size);
-    if (infile.read(reinterpret_cast<char*>(buffer.data()), size)) {
-        // Decrypt ciphertext
-        unsigned char decryptedtext[MAX_CIPHERTEXT_SIZE]; // Allocate with a fixed size
-        decrypt(password, buffer.data(), decryptedtext, key, iv);
-
-        // Output decrypted password
-        std::string decryptedPassword(reinterpret_cast<char*>(decryptedtext));
-        std::cout << "Decrypted password: " << decryptedPassword << std::endl;
-    } else {
-        std::cerr << "Failed to read ciphertext from file!" << std::endl;
+        switch (choice) {
+            case 1: {
+                std::string serviceName, username, password;
+                std::cout << "Enter service name: ";
+                std::getline(std::cin, serviceName);
+                std::cout << "Enter username: ";
+                std::getline(std::cin, username);
+                std::cout << "Enter password: ";
+                std::getline(std::cin, password);
+                passwordManager.storePassword("passwords.dat", serviceName, username, password);
+                std::cout << "Password stored successfully!\n";
+                break;
+            }
+            case 2: {
+                std::string serviceName, username;
+                std::cout << "Enter service name: ";
+                std::getline(std::cin, serviceName);
+                std::cout << "Enter username: ";
+                std::getline(std::cin, username);
+                std::string password = passwordManager.retrievePassword("passwords.dat", serviceName, username);
+                if (!password.empty()) {
+                    std::cout << "Retrieved password: " << password << std::endl;
+                } else {
+                    std::cout << "Password not found!\n";
+                }
+                break;
+            }
+            case 3: {
+                std::cout << "Exiting program.\n";
+                exit(0); // Exit the program
+            }
+            default:
+                std::cout << "Invalid choice. Please enter a valid option.\n";
+        }
     }
 
     return 0;
