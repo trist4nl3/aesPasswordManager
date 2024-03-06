@@ -1,301 +1,236 @@
 #include <iostream>
 #include <fstream>
-#include <vector>
 #include <string>
-#include <algorithm>
+#include <vector>
 #include <openssl/evp.h>
-#include <openssl/aes.h>
+#include <openssl/rand.h>
 #include <cstring>
+#include <sstream>
+#include <limits>
 
-using namespace std;
+#define AES_KEY_SIZE 32
+#define AES_IV_SIZE 16
 
-struct UserInfo {
-    string username;
-    string password;
-    string serviceName;
+struct PasswordEntry {
+    std::string serviceName;
+    std::string username;
+    std::string password;
 };
 
-class User {
-private:
-    string masterPassword;
-    vector<UserInfo> storedInfo;
-public:
-
-    const vector<UserInfo>& getStoredInfo() const {
-        return storedInfo;
-    }
-    User(const string& password) : masterPassword(password) {}
-
-    bool authenticate(const string& password) const {
-        return masterPassword == password;
-    }
-
-    void addInfo(const string& username, const string& password, const string& serviceName) {
-        // Encrypt password using AES before storing
-        string encryptedPassword = aesEncrypt(password, masterPassword);
-        storedInfo.push_back({username, encryptedPassword, serviceName});
-    }
-
-    void removeInfo(const string& serviceName) {
-        auto it = remove_if(storedInfo.begin(), storedInfo.end(),
-                            [&](const UserInfo& info) { return info.serviceName == serviceName; });
-        storedInfo.erase(it, storedInfo.end());
-    }
-
-    void updateInfo(const string& serviceName, const string& newUsername, const string& newPassword) {
-        for (auto& info : storedInfo) {
-            if (info.serviceName == serviceName) {
-                info.username = newUsername;
-                // Encrypt new password using AES before updating
-                info.password = aesEncrypt(newPassword, masterPassword);
-                break;
-            }
-        }
-    }
-
-    void logout() {
-        storedInfo.clear();
-    }
-
-    string aesEncrypt(const string& plaintext, const string& key) const {
-        unsigned char iv[AES_BLOCK_SIZE];
-        memset(iv, 0, AES_BLOCK_SIZE);
-
-        AES_KEY aesKey;
-        if (AES_set_encrypt_key((const unsigned char*)key.c_str(), 128, &aesKey) < 0) {
-            cerr << "Error setting AES encryption key\n";
-            exit(1);
-        }
-
-        int ciphertextLen = ((plaintext.length() - 1) / AES_BLOCK_SIZE + 1) * AES_BLOCK_SIZE;
-        unsigned char ciphertext[ciphertextLen];
-
-        AES_cbc_encrypt((const unsigned char*)plaintext.c_str(), ciphertext, plaintext.length(),
-                        &aesKey, iv, AES_ENCRYPT);
-
-        return string((char*)ciphertext, ciphertextLen);
-    }
-
-    static string aesDecrypt(const string& ciphertext, const string& key) {
-        unsigned char iv[AES_BLOCK_SIZE];
-        memset(iv, 0, AES_BLOCK_SIZE);
-
-        AES_KEY aesKey;
-        if (AES_set_decrypt_key((const unsigned char*)key.c_str(), 128, &aesKey) < 0) {
-            cerr << "Error setting AES decryption key\n";
-            exit(1);
-        }
-
-        int plaintextLen = ciphertext.length();
-        unsigned char plaintext[plaintextLen];
-
-        AES_cbc_encrypt((const unsigned char*)ciphertext.c_str(), plaintext, plaintextLen,
-                        &aesKey, iv, AES_DECRYPT);
-
-        return string((char*)plaintext);
-    }
-
-    void saveData(const string& filename) {
-        ofstream file(filename);
-        if (!file) {
-            cerr << "Error opening file for writing\n";
-            exit(1);
-        }
-
-        for (const auto& info : storedInfo) {
-            file << info.username << ',' << info.password << ',' << info.serviceName << '\n';
-        }
-
-        file.close();
-    }
-
-    void loadData(const string& filename) {
-        ifstream file(filename);
-        if (!file) {
-            cerr << "Error opening file for reading\n";
-            exit(1);
-        }
-
-        storedInfo.clear();
-
-        string line;
-        while (getline(file, line)) {
-            size_t pos1 = line.find(',');
-            size_t pos2 = line.find(',', pos1 + 1);
-            if (pos1 != string::npos && pos2 != string::npos) {
-                string username = line.substr(0, pos1);
-                string password = line.substr(pos1 + 1, pos2 - pos1 - 1);
-                string serviceName = line.substr(pos2 + 1);
-                storedInfo.push_back({username, password, serviceName});
-            }
-        }
-
-        file.close();
-    }
-
-    const string& getMasterPassword() const {
-        return masterPassword;
-    }
-};
-
-vector<User> users;
-
-void createNewUser() {
-    string masterPassword;
-    cout << "Enter master password for new user: ";
-    cin >> masterPassword;
-    User newUser(masterPassword);
-    users.push_back(newUser);
-
-    // Save user information to users.txt
-    ofstream usersFile("users.txt", ios::app); // Append mode
-    if (!usersFile) {
-        cerr << "Error opening users file for writing\n";
-        exit(1);
-    }
-    usersFile << newUser.getMasterPassword() << '\n';
-    usersFile.close();
-
-    // Save userdata file for the new user
-    string encryptedFilename = encryptFilename(masterPassword);
-    newUser.saveData(encryptedFilename);
+std::string generateMasterKey() {
+    unsigned char buffer[AES_KEY_SIZE];
+    RAND_bytes(buffer, AES_KEY_SIZE);
+    return std::string(reinterpret_cast<char*>(buffer), AES_KEY_SIZE);
 }
 
-User* loginUser() {
-    string masterPassword;
-    cout << "Enter master password: ";
-    cin >> masterPassword;
+bool encryptData(const std::string& input, const std::string& key, const std::string& iv, std::string& output) {
+    EVP_CIPHER_CTX *ctx;
+    ctx = EVP_CIPHER_CTX_new();
 
-    for (auto& user : users) {
-        if (user.authenticate(masterPassword))
-            return &user;
+    if (!EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, (const unsigned char*)key.c_str(), (const unsigned char*)iv.c_str())) {
+        return false;
     }
 
-    cout << "Invalid master password\n";
-    return nullptr;
+    int len;
+    int ciphertext_len;
+    unsigned char ciphertext[input.size() + AES_KEY_SIZE];
+
+    if (!EVP_EncryptUpdate(ctx, ciphertext, &len, (const unsigned char*)input.c_str(), input.size())) {
+        return false;
+    }
+    ciphertext_len = len;
+
+    if (!EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) {
+        return false;
+    }
+    ciphertext_len += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    output.assign((char*)ciphertext, ciphertext_len);
+
+    return true;
 }
 
-string encryptFilename(const string& username) {
-    string encryptedFilename = username;
-    // Encrypt the filename using a simple XOR cipher
-    const char key = 'K'; // You can choose any character as a key
-    for (char& c : encryptedFilename) {
-        c = c ^ key;
+bool decryptData(const std::string& input, const std::string& key, const std::string& iv, std::string& output) {
+    EVP_CIPHER_CTX *ctx;
+    ctx = EVP_CIPHER_CTX_new();
+
+    if (!EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, (const unsigned char*)key.c_str(), (const unsigned char*)iv.c_str())) {
+        return false;
     }
-    return encryptedFilename + ".txt";
+
+    int len;
+    int plaintext_len;
+    unsigned char plaintext[input.size()];
+
+    if (!EVP_DecryptUpdate(ctx, plaintext, &len, (const unsigned char*)input.c_str(), input.size())) {
+        return false;
+    }
+    plaintext_len = len;
+
+    if (!EVP_DecryptFinal_ex(ctx, plaintext + len, &len)) {
+        return false;
+    }
+    plaintext_len += len;
+
+    EVP_CIPHER_CTX_free(ctx);
+
+    output.assign((char*)plaintext, plaintext_len);
+
+    return true;
+}
+
+std::string loadOrCreateMasterKey() {
+    std::ifstream keyFile("master.key", std::ios::binary);
+    if (keyFile) {
+        std::string key;
+        keyFile.seekg(0, std::ios::end);
+        size_t size = keyFile.tellg();
+        key.resize(size);
+        keyFile.seekg(0);
+        keyFile.read(&key[0], size);
+        std::cout << "Master key loaded from file.\n";
+        return key;
+    } else {
+        std::string key = generateMasterKey();
+        std::ofstream newKeyFile("master.key", std::ios::binary);
+        newKeyFile.write(key.c_str(), key.size());
+        return key;
+    }
+}
+
+void saveEncryptedPasswords(const std::vector<PasswordEntry>& entries, const std::string& masterKey) {
+    std::ofstream passwordFile("passwords.enc", std::ios::binary | std::ios::app); 
+    if (!passwordFile) {
+        std::cerr << "Failed to open passwords.enc for writing." << std::endl;
+        return;
+    }
+    for (const auto& entry : entries) {
+        std::string encryptedEntry;
+        std::string plainEntry = entry.serviceName + "\n" + entry.username + "\n" + entry.password + "\n";
+        if (encryptData(plainEntry, masterKey, masterKey.substr(0, AES_IV_SIZE), encryptedEntry)) {
+            passwordFile.write(encryptedEntry.c_str(), encryptedEntry.size());
+        } else {
+            std::cerr << "Encryption failed for entry: " << entry.serviceName << std::endl;
+        }
+    }
+    passwordFile.close();
+}
+
+std::vector<PasswordEntry> readEncryptedPasswords(const std::string& masterKey) {
+    std::vector<PasswordEntry> entries;
+    std::ifstream passwordFile("passwords.enc", std::ios::binary);
+    if (!passwordFile) {
+        std::cerr << "Failed to open passwords.enc for reading." << std::endl;
+        return entries;
+    }
+
+    std::string encryptedData((std::istreambuf_iterator<char>(passwordFile)), std::istreambuf_iterator<char>());
+    passwordFile.close();
+
+    std::string decryptedData;
+    if (!decryptData(encryptedData, masterKey, masterKey.substr(0, AES_IV_SIZE), decryptedData)) {
+        std::cerr << "Decryption failed for passwords.enc." << std::endl;
+        return entries;
+    }
+
+    std::istringstream iss(decryptedData);
+    std::string line;
+    while (std::getline(iss, line)) {
+        PasswordEntry entry;
+        entry.serviceName = line;
+        if (!std::getline(iss, entry.username)) {
+            std::cerr << "Error: Unexpected end of file while reading username." << std::endl;
+            return entries;
+        }
+        if (!std::getline(iss, entry.password)) {
+            std::cerr << "Error: Unexpected end of file while reading password." << std::endl;
+            return entries;
+        }
+        entries.push_back(entry);
+    }
+
+    return entries;
+}
+
+void addOrUpdatePassword(std::vector<PasswordEntry>& entries) {
+    PasswordEntry entry;
+    std::cout << "Enter service name: ";
+    std::getline(std::cin, entry.serviceName);
+    std::cout << "Enter username: ";
+    std::getline(std::cin, entry.username);
+    std::cout << "Enter password: ";
+    std::getline(std::cin, entry.password);
+
+    for (auto& existingEntry : entries) {
+        if (existingEntry.serviceName == entry.serviceName && existingEntry.username == entry.username) {
+            existingEntry.password = entry.password;
+            std::cout << "Password updated for " << entry.serviceName << std::endl;
+            return;
+        }
+    }
+
+    entries.push_back(entry);
+    std::cout << "New password added for " << entry.serviceName << std::endl;
+}
+
+void removePassword(std::vector<PasswordEntry>& entries) {
+    std::string serviceName, username;
+    std::cout << "Enter service name: ";
+    std::getline(std::cin, serviceName);
+    std::cout << "Enter username: ";
+    std::getline(std::cin, username);
+
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+        if (it->serviceName == serviceName && it->username == username) {
+            entries.erase(it);
+            std::cout << "Password removed for " << serviceName << std::endl;
+            return;
+        }
+    }
+
+    std::cout << "Password not found for " << serviceName << std::endl;
+}
+
+void viewPasswords(const std::vector<PasswordEntry>& entries) {
+    if (entries.empty()) {
+        std::cout << "No passwords stored.\n";
+    } else {
+        std::cout << "Stored Passwords:\n";
+        for (const auto& entry : entries) {
+            std::cout << "Service: " << entry.serviceName << "\nUsername: " << entry.username << "\nPassword: " << entry.password << "\n\n";
+        }
+    }
 }
 
 int main() {
-    int choice;
-    User* currentUser = nullptr;
+    std::string masterKey = loadOrCreateMasterKey();
 
-    // Load existing users from users.txt
-    ifstream usersFile("users.txt");
-    if (usersFile) {
-        string masterPassword;
-        while (getline(usersFile, masterPassword)) {
-            users.emplace_back(masterPassword);
-        }
-        usersFile.close();
-    }
+    std::vector<PasswordEntry> passwordEntries = readEncryptedPasswords(masterKey);
 
     while (true) {
-        cout << "\n1. Login\n2. Create New User\n3. Exit\nEnter your choice: ";
-        cin >> choice;
+        std::cout << "1. Add/Update Password\n2. Remove Password\n3. View Passwords\n4. Exit\n";
+        int choice;
+        std::cin >> choice;
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 
         switch (choice) {
             case 1:
-                currentUser = loginUser();
-                if (currentUser != nullptr) {
-                    cout << "Login successful\n";
-                    string encryptedFilename = encryptFilename(currentUser->getMasterPassword());
-                    ifstream file(encryptedFilename);
-                    if (!file.is_open()) {
-                        // If user is logging in for the first time, create a new file
-                        currentUser->saveData(encryptedFilename);
-                    } else {
-                        currentUser->loadData(encryptedFilename);
-                    }
-                    file.close();
-                    while (true) {
-                        cout << "\nLogged in Menu:\n"
-                             << "1. Add Information\n"
-                             << "2. Remove Information\n"
-                             << "3. Update Information\n"
-                             << "4. Logout\n"
-                             << "5. View Password\n"
-                             << "Enter your choice: ";
-                        cin >> choice;
-                        cin.ignore(); // Consume newline character left in buffer
-
-                        switch (choice) {
-                            case 1: {
-                                string username, password, serviceName;
-                                cout << "Enter username: ";
-                                cin >> username;
-                                cout << "Enter password: ";
-                                cin >> password;
-                                cout << "Enter service name: ";
-                                cin >> serviceName;
-                                currentUser->addInfo(username, password, serviceName);
-                                cout << "Information added successfully\n";
-                                break;
-                            }
-                            case 2: {
-                                string serviceName;
-                                cout << "Enter service name to remove: ";
-                                cin >> serviceName;
-                                currentUser->removeInfo(serviceName);
-                                cout << "Information removed successfully\n";
-                                break;
-                            }
-                            case 3: {
-                                string serviceName, newUsername, newPassword;
-                                cout << "Enter service name to update: ";
-                                cin >> serviceName;
-                                cout << "Enter new username: ";
-                                cin >> newUsername;
-                                cout << "Enter new password: ";
-                                cin >> newPassword;
-                                currentUser->updateInfo(serviceName, newUsername, newPassword);
-                                cout << "Information updated successfully\n";
-                                break;
-                            }
-                            case 4:
-                                currentUser->saveData(encryptedFilename);
-                                currentUser->logout();
-                                currentUser = nullptr;
-                                cout << "Logged out\n";
-                                break;
-                            case 5: {
-                                cout << "Enter service name to view password: ";
-                                string serviceName;
-                                cin >> serviceName;
-                                for (const auto& info : currentUser->getStoredInfo()) {
-                                    if (info.serviceName == serviceName) {
-                                        cout << "Password for " << serviceName << ": " << User::aesDecrypt(info.password, currentUser->getMasterPassword()) << endl;
-                                        break;
-                                    }
-                                }
-                                break;
-                            }
-                            default:
-                                cout << "Invalid choice\n";
-                        }
-
-                        if (currentUser == nullptr)
-                            break; // Break out of inner loop if logged out
-                    }
-                }
+                addOrUpdatePassword(passwordEntries);
                 break;
             case 2:
-                createNewUser();
+                removePassword(passwordEntries);
                 break;
             case 3:
-                cout << "Exiting...\n";
+                viewPasswords(passwordEntries);
+                break;
+            case 4:
+                saveEncryptedPasswords(passwordEntries, masterKey);
                 return 0;
             default:
-                cout << "Invalid choice\n";
+                std::cerr << "Invalid choice. Please try again.\n";
+                break;
         }
     }
 
